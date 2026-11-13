@@ -1,0 +1,38 @@
+name: push-manifest
+on: workflow_dispatch
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Push manifest with a foreign layer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          REPO="ghcr.io/${OWNER,,}/ce-w62-base"
+          echo "repo=$REPO"
+          TOKEN=$(curl -s -u "${OWNER}:${GH_TOKEN}" "https://ghcr.io/token?scope=repository:${OWNER,,}/ce-w62-base:push,pull&service=ghcr.io" | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+          echo "token length ${#TOKEN}"
+          CONFIG='{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":["sha256:97e4ece8f8a4d01b66df2c55c1f1e8a2860597b54dffbbc0df2f9942062cb34d"]},"config":{}}'
+          CFG_DIGEST=sha256:$(printf '%s' "$CONFIG" | sha256sum | cut -d' ' -f1)
+          echo "config digest $CFG_DIGEST"
+          # upload config blob (monolithic)
+          LOC=$(curl -s -X POST -H "Authorization: Bearer $TOKEN" "https://ghcr.io/v2/${OWNER,,}/ce-w62-base/blobs/uploads/" -D - -o /dev/null | tr -d '\r' | awk -F': ' '/[Ll]ocation/{print $2}')
+          curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/octet-stream" \
+            --data-binary "$CONFIG" "${LOC}&digest=${CFG_DIGEST}" -o /dev/null -w "config put %{http_code}\n"
+          MANIFEST=$(cat <<JSON
+          {"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json",
+           "config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"${CFG_DIGEST}","size":${#CONFIG}},
+           "layers":[{"mediaType":"application/vnd.oci.image.layer.nondistributable.v1.tar+gzip",
+                      "digest":"sha256:034d6572bf287fa79604fee9be062f0683809ae3a3685bc7b0e17bd1c48c50e8",
+                      "size":2206402,
+                      "urls":["https://registry.cloudflare.com/v2/library/absent/blobs/sha256:0000000000000000000000000000000000000000000000000000000000000000"]}]}
+          JSON
+          )
+          echo "$MANIFEST" | tr -d '\n' > /tmp/m.json
+          curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/vnd.oci.image.manifest.v1+json" \
+            --data-binary @/tmp/m.json "https://ghcr.io/v2/${OWNER,,}/ce-w62-base/manifests/v1" -w "\nmanifest put %{http_code}\n"
